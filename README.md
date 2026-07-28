@@ -54,8 +54,8 @@ AI Agent receives: "Customer Alex's order ORD-1001 arrived damaged"
 
 ## 🚀 Live Hosted URL
 
-- **MCP SSE Endpoint:** `https://<YOUR-RENDER-APP-NAME>.onrender.com/sse`
-- **Health Check:** `https://<YOUR-RENDER-APP-NAME>.onrender.com/health`
+- **MCP SSE Endpoint:** `https://diligence-mcp-ops.onrender.com/sse`
+- **Health Check:** `https://diligence-mcp-ops.onrender.com/health`
 
 > **Note:** The Render free tier spins down after 15 min of inactivity. Hit the health check URL first to warm it up.
 
