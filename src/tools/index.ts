@@ -9,7 +9,7 @@
 import * as getOrder from "./getOrder.js";
 import * as checkStock from "./checkStock.js";
 import * as processRefund from "./processRefund.js";
-import * as createShipment from "./createShipment.js";
+import * as requestReplacement from "./requestReplacement.js";
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ export const toolRegistry: ToolEntry[] = [
   { definition: getOrder.definition, handler: getOrder.handler },
   { definition: checkStock.definition, handler: checkStock.handler },
   { definition: processRefund.definition, handler: processRefund.handler },
-  { definition: createShipment.definition, handler: createShipment.handler },
+  { definition: requestReplacement.definition, handler: requestReplacement.handler },
 ];
 
 // ─── Lookup Map (name → handler) ─────────────────────────────────────────────

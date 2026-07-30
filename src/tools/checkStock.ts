@@ -1,54 +1,52 @@
 import { z } from "zod";
-import { mockInventory } from "../db/mockData.js";
+import { query } from "../db/index.js";
 import type { ToolDefinition, ToolHandler } from "./index.js";
-
-// ─── Schema ───────────────────────────────────────────────────────────────────
 
 const InputSchema = z.object({
   sku: z.string(),
 });
 
-// ─── Tool Definition (shown in ListTools) ────────────────────────────────────
-
 export const definition: ToolDefinition = {
   name: "check_inventory",
-  description: "Check stock availability for a replacement item by SKU.",
+  description: "Check warehouse inventory stock levels for a specific SKU.",
   inputSchema: {
     type: "object",
     properties: {
       sku: {
         type: "string",
-        description: "Product SKU identifier (e.g. SKU-AUDIO-01)",
+        description: "The product SKU to check (e.g. SKU-AUDIO-01)",
       },
     },
     required: ["sku"],
   },
 };
 
-// ─── Handler (executed in CallTool) ──────────────────────────────────────────
-
 export const handler: ToolHandler = async (args) => {
   const { sku } = InputSchema.parse(args);
-  const item = mockInventory.get(sku);
 
-  if (!item) {
+  const result = await query(`
+    SELECT sku, name, stock_quantity, reserved_quantity 
+    FROM inventory 
+    WHERE sku = $1
+  `, [sku]);
+
+  if (result.rows.length === 0) {
     return {
-      content: [{ type: "text", text: `Error: SKU ${sku} not found.` }],
+      content: [{ type: "text", text: `Error: SKU ${sku} not found in warehouse.` }],
       isError: true,
     };
   }
 
-  const availableStock = item.stockQuantity - item.reservedQuantity;
+  const item = result.rows[0];
+  const available = item.stock_quantity - item.reserved_quantity;
+
+  const summary = {
+    ...item,
+    availableQuantity: available,
+    isAvailableForReplacement: available > 0,
+  };
+
   return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(
-          { ...item, availableStock, isAvailable: availableStock > 0 },
-          null,
-          2
-        ),
-      },
-    ],
+    content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
   };
 };

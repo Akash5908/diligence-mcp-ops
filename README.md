@@ -4,40 +4,33 @@ An **AI-native, remotely hosted MCP server** written in TypeScript that empowers
 
 ---
 
-## 🎯 Problem & User
+## 🎯 Problem & Justification
 
 **User:** An operations agent (human or AI) handling post-delivery exceptions in an online commerce business.
 
 **Problem:** When an order is damaged or lost, the ops agent must:
-1. Investigate the order and understand what happened
-2. Check if a replacement item is available in inventory
-3. Process a partial or full refund safely (without overpaying or duplicating)
-4. Create a replacement shipment if appropriate
+1. Investigate the order and understand what happened (Read)
+2. Check if a replacement item is available in inventory (Read)
+3. Process a partial or full refund safely (Write)
+4. Escalate for a replacement shipment if appropriate (Write)
 
-Today this requires jumping between systems. This MCP server gives a single, safe interface for the full workflow.
+**Justification:** Resolving post-delivery exceptions (damaged/lost items) touches the three most critical domains of commerce ops (Order Management, Inventory, and Payment). It provides a complete, measurable operational outcome while remaining safely constrainable via programmatic guardrails (e.g., refund limits, idempotency).
 
----
+## 🏢 Systems Modeled (Strict PostgreSQL Architecture)
 
-## 🔄 End-to-End Workflow
+To support this workflow, the server connects to a **PostgreSQL Database** modeling three source systems with strict relational integrity:
+1. **OMS (Order Management System):** Stores order history, items, and status.
+2. **WMS (Warehouse Management System):** Stores WMS inventory and Carrier shipments.
+3. **Payment Gateway:** Records processed refunds and enforces ledger protection (`CHECK (amount_refunded <= amount_paid)`).
 
-```
-AI Agent receives: "Customer Alex's order ORD-1001 arrived damaged"
-         │
-         ▼
-[get_order_details]  ──→  Order: DAMAGED, $120 total, 0 refunded
-         │
-         ▼
-[check_inventory]    ──→  SKU-AUDIO-01: 13 units available
-         │
-         ▼
-[process_refund]     ──→  $50 partial refund applied
-  ├─ Guardrail ①: Rejects if amount > remaining balance
-  └─ Guardrail ②: Rejects duplicate idempotency key
-         │
-         ▼
-[create_shipment]    ──→  Replacement shipment PENDING
-  └─ Guardrail ③: Only allowed for DAMAGED or LOST orders
-```
+## 🛡️ Read vs. Write Boundary
+
+The workflow goes beyond lookup to safely bounded actions.
+- **Read Boundary:** Unrestricted lookup of order details and inventory availability.
+- **Write Boundary (Atomic):** Actions (Refunds, Replacements) are executed via single atomic `BEGIN/COMMIT` transactions.
+  - **Guardrails:** A refund cannot exceed $150, the order must be <30 days old, risk score <70, and carrier exception verified. Failures route automatically to manager review via the `escalations` table.
+  - **Idempotency:** Stable-intent idempotency is enforced purely at the database level using `UNIQUE` indexes on `(order_id, sku, action, amount)`. Duplicate requests are caught and gracefully returned without duplicating mutations.
+  - **Replacements:** Are never created automatically. They are always routed to `escalations` for human approval.
 
 ---
 
@@ -47,8 +40,8 @@ AI Agent receives: "Customer Alex's order ORD-1001 arrived damaged"
 |---|---|---|---|
 | `get_order_details` | Fetch order status, items, tracking, refund history | `orderId` | Returns error if not found |
 | `check_inventory` | Check available stock for a SKU | `sku` | Returns error if SKU not found |
-| `process_refund` | Apply a partial or full refund | `orderId`, `amount`, `reason`, `idempotencyKey` | ① Amount cap (≤ remaining balance) ② Idempotency (rejects duplicate keys) |
-| `create_shipment` | Dispatch a replacement item | `orderId`, `address` | ③ Status check (DAMAGED or LOST orders only) |
+| `process_refund` | Apply a partial or full refund atomically | `orderId`, `sku`, `amount`, `action`, `idempotencyKey` | 6 strict guardrails (amount cap, risk, age). Stable-intent idempotency catches duplicates. |
+| `request_replacement` | Escalate a request for a replacement item | `orderId`, `sku`, `reason`, `idempotencyKey` | Always escalates to manager. Enforces stable-intent idempotency on retries. |
 
 ---
 
@@ -67,19 +60,17 @@ AI Agent receives: "Customer Alex's order ORD-1001 arrived damaged"
 src/
 ├── index.ts          # Express server — SSE + health endpoints
 ├── server.ts         # MCP server factory — reads tool registry, dispatches
-├── types/
-│   └── index.ts      # Shared domain interfaces
 ├── db/
-│   └── mockData.ts   # Synthetic in-memory data (orders, inventory, refunds)
+│   ├── index.ts      # PostgreSQL connection pool and executeTransaction logic
+│   ├── schema.sql    # DDL for all 9 tables and UNIQUE constraints
+│   └── seed.ts       # Database seeding script for testing
 └── tools/
-    ├── index.ts      # Tool registry barrel (toolRegistry[], toolHandlerMap)
+    ├── index.ts      # Tool registry barrel
     ├── getOrder.ts   # get_order_details tool
     ├── checkStock.ts # check_inventory tool
     ├── processRefund.ts  # process_refund tool
-    └── createShipment.ts # create_shipment tool
+    └── requestReplacement.ts # request_replacement tool
 ```
-
-Each tool exports a `definition` (JSON schema for ListTools) and a `handler` (async function for CallTool). Adding a new tool requires touching only one file (`tools/index.ts`).
 
 ---
 
@@ -89,27 +80,24 @@ Each tool exports a `definition` (JSON schema for ListTools) and a `handler` (as
 # Install dependencies
 npm install
 
-# Run automated runtime verification (7 tests)
+# Setup your local PostgreSQL and provide a .env file
+# DATABASE_URL=postgresql://localhost:5432/diligence_mcp_test
+
+# Run automated runtime verification (Testing all DB Constraints & Idempotency)
 npm run test
-
-# Start local dev server
-npm run dev
-
-# Build for production
-npm run build
 ```
 
 Expected test output:
 ```
 🧪 Running MCP Tool Verification Tests...
-1. Testing get_order_details (Valid Order)...      ✅
-2. Testing check_inventory...                      ✅
-3. Testing process_refund (Valid Amount)...        ✅
-4. Testing process_refund (Guardrail: Exceed Max Limit)... ✅
-5. Testing process_refund (Guardrail: Duplicate Key)...    ✅
-6. Testing create_shipment (Valid: DAMAGED order)...       ✅
-7. Testing create_shipment (Guardrail: DELIVERED order)... ✅
-✅ All runtime verification tests executed successfully!
+1. Testing get_order_details...                      ✅
+2. Testing process_refund (Valid Amount)...          ✅
+3. Testing process_refund (Stable Intent - Idempotency)... ✅
+4. Testing process_refund (Distinct Legitimate Intent)... ✅
+5. Testing process_refund (Guardrail: Exceed Balance)... ✅
+6. Testing request_replacement...                    ✅
+7. Testing request_replacement (Stable Intent)...    ✅
+✅ All PostgreSQL verification tests executed successfully!
 ```
 
 ---
@@ -117,36 +105,11 @@ Expected test output:
 ## 📐 Product Decisions & Scope
 
 ### What's in scope
-- Order investigation and status lookup
-- Inventory availability checks for replacements
-- Safe refund processing with two guardrails
-- Replacement shipment creation with eligibility enforcement
-- End-to-end verification via in-memory MCP transport
+- Order investigation and status lookup using PostgreSQL JOINs.
+- Safe refund processing with strict atomic transactions.
+- Hardened database idempotency rules using PostgreSQL `SAVEPOINT`.
+- Automated manager escalations for replacements and denied refunds.
 
 ### What's intentionally out of scope
-- **Authentication / user management** — not required for the assignment; a production version would use API keys or OAuth
-- **Persistent storage** — in-memory state is sufficient for demo purposes; production would use a database
+- **Authentication / user management** — a production version would use API keys or OAuth
 - **Frontend / UI** — the MCP is consumed by AI agents (Claude, Cursor) directly
-- **Real payment gateway / inventory system** — synthetic data used throughout
-- **CI/CD pipeline** — single-step Render deploy is sufficient
-
----
-
-## 🔒 Assumptions
-
-1. All data is synthetic — no real customer data or production credentials
-2. State is in-memory and resets on server restart (by design for demo)
-3. The `idempotencyKey` is provided by the calling agent; no server-side key generation
-4. A single active SSE connection is assumed (transport is not multiplexed)
-
----
-
-## ⚠️ Known Limitations & Next Steps
-
-| Limitation | Next Step |
-|---|---|
-| In-memory state — resets on restart | Add a lightweight DB (SQLite / Postgres) |
-| No auth on SSE endpoint | Add API key middleware |
-| Single SSE transport instance | Use session-keyed transport map |
-| Render free tier cold starts (~30s) | Upgrade to paid or use Railway |
-| No pagination on order history | Add cursor-based pagination to `get_order_details` |
