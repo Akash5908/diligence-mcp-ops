@@ -97,6 +97,7 @@ Expected test output:
 5. Testing process_refund (Guardrail: Exceed Balance)... ✅
 6. Testing request_replacement...                    ✅
 7. Testing request_replacement (Stable Intent)...    ✅
+8. Testing process_refund (Stable-Intent Lookup)...  ✅
 ✅ All PostgreSQL verification tests executed successfully!
 ```
 
