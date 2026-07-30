@@ -46,7 +46,7 @@ async function runTests() {
       arguments: {
         orderId: "ORD-1001",
         sku: "SKU-AUDIO-01",
-        amount: 50.00,
+        amount: 80.00,
         action: "damaged_item",
         idempotencyKey: "KEY-1"
       }
@@ -58,7 +58,7 @@ async function runTests() {
     assert.strictEqual(Number(refundCountRes.rows[0].count), 1, "Exactly 1 refund should exist");
     
     const paymentRes = await pool.query("SELECT amount_refunded FROM payments WHERE order_id = 'ORD-1001'");
-    assert.strictEqual(Number(paymentRes.rows[0].amount_refunded), 50.00, "Ledger should reflect $50.00 refunded");
+    assert.strictEqual(Number(paymentRes.rows[0].amount_refunded), 80.00, "Ledger should reflect $80.00 refunded");
     console.log("✅ process_refund (Valid Amount) passed and verified in DB");
 
     // Test 3: Idempotency - Exact Same Refund Intent
@@ -68,7 +68,7 @@ async function runTests() {
       arguments: {
         orderId: "ORD-1001",
         sku: "SKU-AUDIO-01",
-        amount: 50.00,
+        amount: 80.00,
         action: "damaged_item",
         idempotencyKey: "KEY-2" // Even with a new key, should return original
       }
@@ -100,7 +100,7 @@ async function runTests() {
     assert.strictEqual(Number(refundCountAfterDistinct.rows[0].count), 2, "Distinct refund intent should create a new row");
     
     const paymentResDistinct = await pool.query("SELECT amount_refunded FROM payments WHERE order_id = 'ORD-1001'");
-    assert.strictEqual(Number(paymentResDistinct.rows[0].amount_refunded), 60.00, "Ledger should reflect $60.00 total refunded");
+    assert.strictEqual(Number(paymentResDistinct.rows[0].amount_refunded), 90.00, "Ledger should reflect $90.00 total refunded");
     console.log("✅ process_refund (Distinct Intent) passed and verified in DB");
 
     // Test 5: Guardrail - Exceed Ledger Balance (Routes to Escalation)
@@ -110,7 +110,7 @@ async function runTests() {
       arguments: {
         orderId: "ORD-1001",
         sku: "SKU-AUDIO-01",
-        amount: 100.00, // Remaining balance is 120 - 60 = 60
+        amount: 100.00, // Remaining balance is 120 - 90 = 30
         action: "second_damage",
         idempotencyKey: "KEY-4"
       }
@@ -160,6 +160,32 @@ async function runTests() {
     const replaceEscDupRes = await pool.query("SELECT COUNT(*) FROM escalations WHERE type = 'REPLACEMENT_APPROVAL'");
     assert.strictEqual(Number(replaceEscDupRes.rows[0].count), 1, "Duplicate replacement should NOT create a new escalation");
     console.log("✅ request_replacement (Idempotency) passed and verified in DB");
+
+    // Test 8: Stable-Intent Retry After State Change (Client requirement)
+    console.log("8. Testing process_refund (Stable-Intent Lookup Before Reevaluation)...");
+    const refundResStateChange = await client.callTool({
+      name: "process_refund",
+      arguments: {
+        orderId: "ORD-1001",
+        sku: "SKU-AUDIO-01",
+        amount: 80.00, // Same intent as Test 2
+        action: "damaged_item",
+        idempotencyKey: "KEY-7"
+      }
+    });
+    // At this point, the ledger only has $30 remaining. If the logic checked current eligibility FIRST, 
+    // it would fail the $80 ledger check and escalate. Since we fixed the lookup, it should bypass 
+    // eligibility and immediately return the original success from Test 2.
+    assert.strictEqual(refundResStateChange.isError, undefined, "Idempotent state-change retry should not return error");
+    assert.ok((refundResStateChange.content[0] as { text: string }).text.includes("Idempotent Return"), "Response should indicate idempotent return");
+    
+    // Verify Database Side Effects (NO mutations occurred)
+    const refundCountAfterStateChange = await pool.query("SELECT COUNT(*) FROM refunds WHERE order_id = 'ORD-1001'");
+    assert.strictEqual(Number(refundCountAfterStateChange.rows[0].count), 2, "State-change retry should NOT create a new refund row");
+    
+    const escCountAfterStateChange = await pool.query("SELECT COUNT(*) FROM escalations WHERE type = 'REFUND_APPROVAL'");
+    assert.strictEqual(Number(escCountAfterStateChange.rows[0].count), 1, "State-change retry should NOT create a new escalation");
+    console.log("✅ process_refund (State-Change Idempotency) passed and verified in DB");
 
     console.log("\n🎉 All PostgreSQL verification tests and assertions passed perfectly!");
   } catch (err) {

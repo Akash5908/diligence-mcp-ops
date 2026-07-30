@@ -60,7 +60,25 @@ export const handler: ToolHandler = async (args) => {
          return { content: [{ type: "text", text: `Error: SKU ${sku} not found on Order ${orderId}.` }], isError: true };
       }
 
-      // 2. Evaluate Eligibility (All must pass)
+      // 2. Stable-Intent Lookup Before Reevaluation
+      // Client Requirement: "process_refund checks current eligibility before looking for an existing stable-intent refund... Please resolve the stable-intent lookup before reevaluation"
+      const existingRefund = await client.query(
+        'SELECT id FROM refunds WHERE order_id = $1 AND sku = $2 AND action = $3 AND amount = $4',
+        [orderId, sku, action, amount]
+      );
+      if (existingRefund.rows.length > 0) {
+        return { content: [{ type: "text", text: `[Idempotent Return] Refund already processed: ${existingRefund.rows[0].id}` }] };
+      }
+
+      const existingEsc = await client.query(
+        'SELECT id, status FROM escalations WHERE order_id = $1 AND sku = $2 AND action = $3 AND amount = $4',
+        [orderId, sku, action, amount]
+      );
+      if (existingEsc.rows.length > 0) {
+        return { content: [{ type: "text", text: `[Idempotent Return] Escalation already exists: ${existingEsc.rows[0].id} (Status: ${existingEsc.rows[0].status})` }] };
+      }
+
+      // 3. Evaluate Eligibility (All must pass)
       const reasons: string[] = [];
       if (amount > 150) reasons.push("Amount exceeds $150 limit.");
       if (amount > (Number(ctx.amount_paid) - Number(ctx.amount_refunded))) reasons.push("Amount exceeds remaining ledger balance.");
@@ -99,7 +117,7 @@ export const handler: ToolHandler = async (args) => {
         }
       }
 
-      // PASS: Execute Refund
+      // 4. Execute Refund
       try {
         const refId = `REF-${randomUUID()}`;
         await client.query('SAVEPOINT try_ref');
