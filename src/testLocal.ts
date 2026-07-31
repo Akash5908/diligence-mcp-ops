@@ -163,6 +163,13 @@ async function runTests() {
 
     // Test 8: Stable-Intent Retry After State Change (Client requirement)
     console.log("8. Testing process_refund (Stable-Intent Lookup Before Reevaluation)...");
+    
+    // Capture state BEFORE retry
+    const beforePaymentRes = await pool.query("SELECT amount_refunded FROM payments WHERE order_id = 'ORD-1001'");
+    const beforeAuditRes = await pool.query("SELECT COUNT(*) FROM audit_logs");
+    const beforeAmount = Number(beforePaymentRes.rows[0].amount_refunded);
+    const beforeAuditCount = Number(beforeAuditRes.rows[0].count);
+
     const refundResStateChange = await client.callTool({
       name: "process_refund",
       arguments: {
@@ -179,12 +186,18 @@ async function runTests() {
     assert.strictEqual(refundResStateChange.isError, undefined, "Idempotent state-change retry should not return error");
     assert.ok((refundResStateChange.content[0] as { text: string }).text.includes("Idempotent Return"), "Response should indicate idempotent return");
     
-    // Verify Database Side Effects (NO mutations occurred)
+    // Capture state AFTER retry and Assert NO mutations occurred
     const refundCountAfterStateChange = await pool.query("SELECT COUNT(*) FROM refunds WHERE order_id = 'ORD-1001'");
     assert.strictEqual(Number(refundCountAfterStateChange.rows[0].count), 2, "State-change retry should NOT create a new refund row");
     
     const escCountAfterStateChange = await pool.query("SELECT COUNT(*) FROM escalations WHERE type = 'REFUND_APPROVAL'");
     assert.strictEqual(Number(escCountAfterStateChange.rows[0].count), 1, "State-change retry should NOT create a new escalation");
+
+    const afterPaymentRes = await pool.query("SELECT amount_refunded FROM payments WHERE order_id = 'ORD-1001'");
+    const afterAuditRes = await pool.query("SELECT COUNT(*) FROM audit_logs");
+    assert.strictEqual(Number(afterPaymentRes.rows[0].amount_refunded), beforeAmount, "State-change retry should NOT mutate payment ledger");
+    assert.strictEqual(Number(afterAuditRes.rows[0].count), beforeAuditCount, "State-change retry should NOT mutate audit log");
+
     console.log("✅ process_refund (State-Change Idempotency) passed and verified in DB");
 
     console.log("\n🎉 All PostgreSQL verification tests and assertions passed perfectly!");
